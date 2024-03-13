@@ -15,9 +15,32 @@ class ViewController: UIViewController {
     @IBOutlet weak var collectionViewTopConstraint: NSLayoutConstraint!
     @IBOutlet weak var pageController : UIPageControl!
     
+    var workItemReference: DispatchWorkItem? = nil
     var viewModel = NewsViewModel()
-    let imageCache = NSCache<NSString, UIImage>()
+    private let countries = Countries.getCountry()
+    private var activityIndicator: UIActivityIndicatorView!
     
+    var currentPage: Int? { // Implemented debounce technique
+        didSet {
+            activityIndicator.startAnimating()
+            view.isUserInteractionEnabled = false
+            
+            // Cancel any previous dispatch work item
+            workItemReference?.cancel()
+            
+            // Create a new dispatch work item to fetch news for the current country
+            let newsWorkItem = DispatchWorkItem {
+                self.viewModel.fetchNextPage(country: self.countries[self.currentPage ?? 0].code ?? "in", isFresh: true)
+            }
+            
+            // Update the reference to the current work item
+            workItemReference = newsWorkItem
+            
+            // Execute the dispatch work item after a delay of 2 seconds
+            DispatchQueue.main.asyncAfter(deadline: .now() + 2, execute: newsWorkItem)
+            
+        }
+    }
 }
 // MARK: - View LifeCycle
 extension ViewController {
@@ -25,9 +48,7 @@ extension ViewController {
         super.viewDidLoad()
         
         setUpUI()
-        
-        viewModel.fetchNextPage()
-        
+        self.currentPage = 0
         bindViewModel()
     }
     
@@ -35,8 +56,10 @@ extension ViewController {
         viewModel.reloadTableView = {[weak self] in
             DispatchQueue.main.async {
                 self?.tableView.reloadData()
-                self?.collectionView.reloadData()
+                self?.activityIndicator.stopAnimating()
+                self?.view.isUserInteractionEnabled = true
             }
+            
         }
     }
     
@@ -44,7 +67,6 @@ extension ViewController {
         // Configure collection view
         collectionView.dataSource = self
         collectionView.delegate = self
-        collectionView.prefetchDataSource = self
         
         let cellPadding = (collectionView.bounds.width - 300) / 2
         let carouselLayout = UICollectionViewFlowLayout()
@@ -62,6 +84,12 @@ extension ViewController {
         
         // Configure search bar
         searchBar.delegate = self
+        
+        // Configure ActivityIndicator
+        activityIndicator = UIActivityIndicatorView(style: .large)
+        activityIndicator.center = view.center
+        activityIndicator.hidesWhenStopped = true
+        view.addSubview(activityIndicator)
         
     }
     
@@ -87,43 +115,22 @@ extension ViewController {
 
 // MARK: - Collection View Data Source & Collection View Delegate
 
-extension ViewController: UICollectionViewDataSource, UICollectionViewDelegate, UICollectionViewDataSourcePrefetching {
+extension ViewController: UICollectionViewDataSource, UICollectionViewDelegate {
     
     func collectionView(_ collectionView: UICollectionView, numberOfItemsInSection section: Int) -> Int {
-        return viewModel.news.count
+        return countries.count
     }
     
     func collectionView(_ collectionView: UICollectionView, cellForItemAt indexPath: IndexPath) -> UICollectionViewCell {
         let cell = collectionView.dequeueReusableCell(withReuseIdentifier: "ImageCell", for: indexPath) as! ImageCell
-        let article = viewModel.news[indexPath.item]
-        if let imageUrlString = article.urlToImage, let imageUrl = URL(string: imageUrlString) {
-            if let cachedImage = imageCache.object(forKey: imageUrlString as NSString) {
-                cell.imageView.image = cachedImage
-            } else {
-                DispatchQueue.global().async {
-                    if let imageData = try? Data(contentsOf: imageUrl), let image = UIImage(data: imageData) {
-                        DispatchQueue.main.async {
-                            self.imageCache.setObject(image, forKey: imageUrlString as NSString)
-                            if let cellToUpdate = collectionView.cellForItem(at: indexPath) as? ImageCell {
-                                cellToUpdate.imageView.image = image
-                            }
-                        }
-                    }
-                }
-            }
-            
-            if indexPath.item == viewModel.news.count - 1 {
-                viewModel.fetchNextPage()
-            }
+        let flagUrl = "https://flagsapi.com/" + (countries[indexPath.item].code?.uppercased() ?? "IN") + "/flat/64.png"
+        if let imageUrl = URL(string: flagUrl) {
+            cell.imageView.loadImage(fromURL: imageUrl, placeHolderImage: "placeholder")
+            cell.countryName.text = countries[indexPath.item].name ?? ""
         }
         cell.imageView.layer.cornerRadius = 25
         cell.imageView.layer.masksToBounds = true
         return cell
-    }
-    
-    func collectionView(_ collectionView: UICollectionView, prefetchItemsAt indexPaths: [IndexPath]) {
-        guard let lastIndexPath = indexPaths.last?.row, lastIndexPath >= viewModel.news.count - 1 else { return }
-        viewModel.fetchNextPage()
     }
 }
 
@@ -133,10 +140,11 @@ extension ViewController: UISearchBarDelegate {
     func searchBarSearchButtonClicked(_ searchBar: UISearchBar) {
         guard let searchText = searchBar.text, !searchText.isEmpty else {
             searchBar.resignFirstResponder()
-            self.viewModel.fetchNextPage()
+            self.showCollectionView()
+            self.viewModel.fetchNextPage(country: countries[currentPage ?? 0].code ?? "in", isFresh: true)
             return
         }
-        viewModel.fetchSearchedNews(searchQuery: searchText)
+        viewModel.fetchSearchedNews(searchQuery: searchText, country: countries[currentPage ?? 0].code ?? "in")
         searchBar.resignFirstResponder()
     }
     
@@ -155,19 +163,23 @@ extension ViewController: UIScrollViewDelegate {
     func scrollViewDidScroll(_ scrollView: UIScrollView) {
         let offset = scrollView.contentOffset.y
         if scrollView == tableView {
-            if offset > 0 {
+            if offset > 0 &&  self.collectionViewTopConstraint.constant > -25 {
                 hideCollectionView()
+            } else if offset <= 0 && self.collectionViewTopConstraint.constant <= -(self.collectionView.frame.height + 25){
+                showCollectionView()
             }
         } else if scrollView == collectionView {
             let width = scrollView.frame.size.width
             let currentPage = Int((scrollView.contentOffset.x + width / 2) / width)
-            pageController.currentPage = currentPage == 0 ? 0 : (currentPage == viewModel.news.count ? 2 : 1)
-        }
-    }
-    
-    func scrollViewWillBeginDragging(_ scrollView: UIScrollView) {
-        if scrollView == tableView {
-            showCollectionView()
+            if self.currentPage != currentPage {
+                self.currentPage = currentPage
+            }
+            
+            let group = (1...5).map{ $0 * 10 }
+            let result = group.enumerated().first(where: {$0.element >= currentPage })
+            let page = (result?.offset ?? 0)
+        
+            pageController.currentPage = page <= 60 ? page : 6
         }
     }
 }
@@ -190,6 +202,6 @@ extension  ViewController: UITableViewDataSource, UITableViewDelegate, UITableVi
     
     func tableView(_ tableView: UITableView, prefetchRowsAt indexPaths: [IndexPath]) {
         guard let lastIndexPath = indexPaths.last?.row, lastIndexPath >= viewModel.news.count - 1 else { return }
-        viewModel.fetchNextPage()
+        viewModel.fetchNextPage(country: countries[currentPage ?? 0].code ?? "in")
     }
 }

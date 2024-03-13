@@ -15,8 +15,13 @@ class NewsAPI {
         case decodingError
     }
     // Please update the apiKey if you're not able load news
-    func fetchNews(page: Int, pageSize: Int, searchQuery : String = "all") -> AnyPublisher<[Article], APIError> {
-        let url = URL(string: "https://newsapi.org/v2/everything?q=\(searchQuery)&apiKey=9f7a32642e0f43b1a9322e40a9ab14ae&page=\(page)&pageSize=\(pageSize)")!
+    func fetchNews(page: Int, pageSize: Int, searchQuery : String = "", country: String) -> AnyPublisher<[Article], APIError> {
+        
+        let query = searchQuery != "" ? "q=\(searchQuery)&" : ""
+        
+        let url = URL(string: "https://newsapi.org/v2/top-headlines?\(query)country=\(country)&apiKey=9f7a32642e0f43b1a9322e40a9ab14ae&page=\(page)&pageSize=\(pageSize)")!
+        
+        debugPrint(url)
         
         return URLSession.shared.dataTaskPublisher(for: url)
             .tryMap { data, response in
